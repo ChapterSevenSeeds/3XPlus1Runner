@@ -4,36 +4,76 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <stdio.h>
+#include <sstream>
+#include <conio.h>
+#include <chrono>
 
 using namespace std;
 
 const unsigned int processorCount = thread::hardware_concurrency();
-mutex newComputeMutex, printTotalsMutex;
-mpz_t current;
+mutex newComputeMutex;
+mpz_t current, sinceLastCheck;
 vector<mpz_t> currents(processorCount);
+vector<chrono::steady_clock::time_point> timestamps(processorCount);
+chrono::steady_clock::time_point timeSinceLastCheck;
+
+string min()
+{
+    stringstream result;
+    mpz_t temp;
+    mpz_init(temp);
+    mpz_set(temp, currents[0]);
+
+    for (const auto& item : currents)
+    {
+        if (mpz_cmp(temp, item) == -1)
+            mpz_set(temp, item);
+    }
+
+    result << temp;
+
+    return result.str();
+}
 
 void print()
 {
+    mpz_sub(sinceLastCheck, current, sinceLastCheck);
+
+    auto currentTime = chrono::steady_clock::now();
+    auto timespanSinceLastCheck = chrono::duration_cast<chrono::seconds>(currentTime - timeSinceLastCheck).count();
+
+    mpz_fdiv_q_ui(sinceLastCheck, sinceLastCheck, timespanSinceLastCheck ? timespanSinceLastCheck : 1);
+
     for (size_t i = 0; i < processorCount; ++i)
-        cout << "Thread " << i + 1 << ": " << currents[i];
-    cout << "\e[A";
+        cout << "Thread " << i + 1 << ": " << chrono::duration_cast<chrono::seconds>(currentTime - timestamps[i]).count() << " seconds" << endl;
+
+    cout << "Current: " << min() << endl;
+    cout << "Numbers per second: " << sinceLastCheck << endl;
+    cout << "[s] Status, [q] Quit, [p] Pause" << endl << endl;
+
+    mpz_set(sinceLastCheck, current);
+    timeSinceLastCheck = chrono::steady_clock::now();
 }
 
 void go(int threadNumber)
 {
-    mpz_t temp;
+    mpz_t temp, original;
     mpz_init(temp);
+    mpz_init(original);
     while (true)
     {
+        timestamps[threadNumber] = chrono::steady_clock::now();
         unique_lock<mutex> newComputeLock(newComputeMutex);
 
-        mpz_set(temp, current);
+        mpz_set(original, current);
         mpz_add_ui(current, current, 1);
-        mpz_set(currents[threadNumber], temp);
+        mpz_set(currents[threadNumber], original);
+        mpz_set(temp, original);
 
         newComputeLock.unlock();
 
-        while (mpz_cmp_si(temp, 1))
+        while (mpz_cmp(temp, original) >= 0)
         {
             if (mpz_odd_p(temp))
             {
@@ -45,20 +85,19 @@ void go(int threadNumber)
                 mpz_divexact_ui(temp, temp, 2);
             }
         }
-
-        if (printTotalsMutex.try_lock())
-        {
-            print();
-            printTotalsMutex.unlock();
-        }
     }
 }
 
 int main()
 {
-    const auto startFrom = "295147905179353994601";
+    string startFrom;
+    cout << "Start from: ";
+    cin >> startFrom;
 
-    mpz_init_set_str(current, startFrom, 10);
+    mpz_init_set_str(current, startFrom.c_str(), 10);
+    mpz_set(sinceLastCheck, current);
+    timeSinceLastCheck = chrono::steady_clock::now();
+
     vector<thread> threads;
 
     for (size_t i = 0; i < processorCount; ++i) 
@@ -66,7 +105,14 @@ int main()
         threads.push_back(thread(go, i));
     }
 
-    for (auto& t : threads)
-        t.join();
+    print();
+
+    while (true)
+    {
+        int c = _getch();
+
+        if (c == 's')
+            print();
+    }
 }
 
